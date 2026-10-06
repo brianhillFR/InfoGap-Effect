@@ -1,7 +1,6 @@
 .DS_Store
 .Rhistory
 .Rproj.user/
-*.html
 *.log
 *.aux
 *.out
