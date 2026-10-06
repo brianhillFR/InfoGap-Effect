@@ -1,0 +1,490 @@
+---
+title: "Prepare dataset_ENG.rds"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+## Data Cleaning
+
+```{r}
+
+data_file <- "Info-Gap_effect-data.csv"
+data_file <- data_file[file.exists(data_file)][1]
+
+if (is.na(data_file)) {
+  stop("Could not find Info-Gap_effect-data.csv.", call. = FALSE)
+}
+
+raw_data <- readr::read_delim(
+  data_file,
+  delim = ";",
+  skip = 1,
+  show_col_types = FALSE,
+  name_repair = "unique"
+)
+
+if ("2EB1-PI...168" %in% names(raw_data) && !"2EB1-PI" %in% names(raw_data)) {
+  raw_data <- raw_data %>% rename(`2EB1-PI` = `2EB1-PI...168`)
+}
+
+raw_data <- raw_data %>% select(-any_of("2EB1-PI...173"))
+
+raw_data <- raw_data[raw_data$id != "2DLHaNJKfRMNUm", ]
+raw_data <- raw_data[-c(1,2), ]
+
+data <- raw_data
+data2 <- data %>% filter (gc == 2) # Underage or outside England
+data3 <- data %>% filter (gc == 3) # Quotas
+data4 <- data %>% filter (gc == 4) # attention checks
+data <- data %>% filter (gc == 1) # complete
+
+############# Fusionner les colonnes inequality/emissions
+
+data <- data %>%
+  mutate(
+    # min
+    across(starts_with("i_min_"), 
+           ~ coalesce(.x, get(sub("i_min_", "e_min_", cur_column()))),
+           .names = "a_min_{sub('i_min_', '', .col)}"),
+    
+    # max
+    across(starts_with("i_max_"), 
+           ~ coalesce(.x, get(sub("i_max_", "e_max_", cur_column()))),
+           .names = "a_max_{sub('i_max_', '', .col)}"),
+    
+    # inequality / emission
+    across(starts_with("inequality_"), 
+           ~ coalesce(.x, get(sub("inequality_", "emission_", cur_column()))),
+           .names = "a_{sub('inequality_', '', .col)}"),
+    # supprime automatiquement les colonnes utilisées
+    .keep = "unused"
+  )
+
+blocks <- c("B1", "B4", "B3_H", "B3_M", "B3_L")
+```
+
+```{r}
+ 
+## For each WTP Blocks, we "fix" the interval bounds [p_min, p_max] in case the bound is reached. (This is simply a dependency inherited from the .js scripts used within Qualtrics' API.)
+
+for (b in blocks) {
+
+  price_col <- paste0("price_", b)
+  pmin_col  <- paste0("p_min_", b)
+  pmax_col  <- paste0("p_max_", b)
+
+  # Conversion en numérique
+  data[[price_col]] <- as.numeric(as.character(data[[price_col]]))
+  data[[pmin_col]]  <- as.numeric(as.character(data[[pmin_col]]))
+  data[[pmax_col]]  <- as.numeric(as.character(data[[pmax_col]]))
+
+  # if price == 35
+  data[data[[price_col]] == 35, pmin_col] <- 35
+  data[data[[price_col]] == 35, pmax_col] <- NA
+
+  # if price == 2.5
+  data[data[[price_col]] == 2.5, pmin_col] <- NA
+  data[data[[price_col]] == 2.5, pmax_col] <- 2.5
+}
+```
+
+```{r}
+## ================================
+##       DEPENDENT VARIABLES
+## ================================
+
+## For each WTP blocks, we create the variable willingness to pay
+
+for (b in blocks) {
+
+  price_col  <- paste0("price_", b)
+  pmin_col   <- paste0("p_min_", b)
+  pmax_col   <- paste0("p_max_", b)
+
+  wtp_col    <- paste0("wtp_", b)
+  wtpmin_col <- paste0("wtp_min_", b)
+  wtpmax_col <- paste0("wtp_max_", b)
+  wtppos_col <- paste0("wtp_pos_", b)
+
+  # WTP
+  data[[wtp_col]] <- data[[price_col]] - 10
+
+  # Bornes WTP
+  data[[wtpmin_col]] <- data[[pmin_col]] - 10
+  data[[wtpmax_col]] <- data[[pmax_col]] - 10
+
+  # if missing -> -7.5
+  data[[wtpmin_col]][is.na(data[[wtpmin_col]])] <- -7.5
+
+  # Binary variable : 1 if WTP > 0
+  data[[wtppos_col]] <- ifelse(data[[wtp_col]] > 0, 1, 0)
+}
+
+## For eliciation of perception blocks, we use the existing variable 
+
+data <- data %>%
+  mutate(
+    a_B2_H = as.numeric(a_B2_H),
+    a_B2_M = as.numeric(a_B2_M),
+    a_B2_L = as.numeric(a_B2_L)
+  )
+```
+
+```{r}
+## ================================
+##       EXPLANATORY VARIABLES
+## ================================
+
+###### Socio-demographic variables ######
+
+# Creation of dummy variables for each category of individual's position on the political spectrum 
+data$Left   <- ifelse(data$SD7 == 1, 1, 0)
+data$Centre <- ifelse(data$SD7 == 2, 1, 0)
+data$Right  <- ifelse(data$SD7 == 3, 1, 0)
+
+data$political_spectrum <- factor(
+  data$SD7,
+  levels = c(1, 2, 3),
+  labels = c("Left", "Center", "Right"))
+
+# Creation of dummy variables for each category of individual's political affiliation
+data$political_party <- factor(
+  data$SD6,
+  levels = c(1, 2, 3, 4, 5, 6, 7, 8),
+  labels = c(
+    "Conservative Party",
+    "Labour Party",
+    "Liberal Democrats",
+    "Reform UK (previously known as Brexit party)",
+    "Green Party",
+    "Other",
+    "None",
+    "Prefer not to say"))
+
+
+# Creation of a categorical variable for income 
+data$income <- NA
+data$income[data$SD8 == 1 & data$SD9 == 1] <- 1
+data$income[data$SD8 == 1 & data$SD9 == 2] <- 2
+data$income[data$SD8 == 1 & data$SD9 == 3] <- 3
+data$income[data$SD8 == 1 & data$SD9 == 4] <- 4
+data$income[data$SD8 == 1 & data$SD9 == 5] <- 5
+data$income[data$SD8 == 2 & data$SD10 == 1] <- 6
+data$income[data$SD8 == 2 & data$SD10 == 2] <- 7
+data$income[data$SD8 == 2 & data$SD10 == 3] <- 8
+data$income[data$SD8 == 2 & data$SD10 == 4] <- 9
+data$income[data$SD8 == 2 & data$SD10 == 5] <- 10
+data$income[data$SD8 == 2 & data$SD10 == 6] <- 11
+
+data$income_num <- data$income
+
+data$income <- factor(
+  data$income,
+  levels = 1:11,
+  labels = c(
+    "Less than £10,000",
+    "£10,000 to £19,999",
+    "£20,000 to £29,999",
+    "£30,000 to £39,999",
+    "£40,000 to £49,999",
+    "£50,000 to £74,999",
+    "£75,000 to £99,999",
+    "£100,000 to £124,999",
+    "£125,000 to £149,999",
+    "£150,000 to £199,999",
+    "£200,000 or more"))
+
+
+# Creation of a categorical variable for income in 3 groups given the distribution of income and median household income of approx. £30,000
+data$income_alt <- NA
+data$income_alt[data$income_num <= 3] <- 1
+data$income_alt[data$income_num > 3 & data$income_num < 7] <- 2
+data$income_alt[data$income_num >= 7] <- 3
+
+data$income_alt <- factor(
+  data$income_alt,
+  levels = c(1, 2, 3),
+  labels = c("Less than £30,000",
+             "£30,000 to £74,999",
+             "£75 000 or more"))
+
+
+# Creation of a binary variable for sex (=1 if individual indicated being a Female)
+data$female <- ifelse(data$SD1 == 2, 1, 0)
+
+
+
+## Creation of a categorical variable for age 
+data$age_num <- as.numeric(as.character(data$SD2)) - 1
+data$age <- factor(
+  data$age_num,
+  levels = 1:6,
+  labels = c("18-24", "25-34", "35-44", "45-54", "55-64", "65 or older"))
+
+# Grouping age into 3 groups
+data$age_alt <- NA
+data$age_alt[data$age_num %in% c(1,2)] <- 1
+data$age_alt[data$age_num %in% c(3,4)] <- 2
+data$age_alt[data$age_num %in% c(5,6)] <- 3
+data$age_alt <- factor(
+  data$age_alt,
+  levels = c(1,2,3),
+  labels = c(
+    "18-34",
+    "35-54",
+    "55 and older"))
+
+
+# Creation of a categorical variable for region
+data$region <- factor(
+  data$SD3,
+  levels = c(1,2,3,4),
+  labels = c(
+    "Northern England (North West, North East, Yorkshire & the Humber)",
+    "Mid England (West Midlands, East Midlands & East of England)",
+    "Southern England (South West & South East)",
+    "Greater London"))
+
+# Creation of a categorical variable for education 
+data$educ <- factor(
+  data$SD4,
+  levels = 1:6,
+  labels = c(
+    "Other or no qualifications",
+    "GCSEs or equivalent",
+    "AS, A level or equivalent",
+    "NVQ or equivalent",
+    "University or CNAA First Degree",
+    "University or CNAA Higher Degree"))
+
+#Variable binaire university
+data <- data %>%
+  mutate(
+    university = case_when(SD4 %in% c(5, 6) ~ 1,
+                           TRUE ~ 0),
+    university = factor(university), 
+    university = factor(university, labels = c("No University", "University")))
+
+
+# Creation of a categorical variable for employement status
+data$employ_status <- factor(
+  data$SD5,
+  levels = 1:8,
+  labels = c(
+    "Employed full time",
+    "Employed part time",
+    "Self-employed",
+    "Unemployed",
+    "Student",
+    "Retired",
+    "Looking after family or home",
+    "Unable to work"))
+
+# Unemployment 
+data <- data %>%
+  mutate(employ_status_3cat = case_when(
+    employ_status %in% c("Employed full time",
+                         "Employed part time",
+                         "Self-employed") ~ "Employed",
+    employ_status %in% c("Unemployed") ~ "Unemployed",
+    employ_status %in% c("Student",
+                         "Retired",
+                         "Unable to work",
+                         "Looking after family or home") ~ "Out of labour force",
+
+    TRUE ~ NA_character_))
+data$employ_status_3cat <- factor(data$employ_status_3cat,
+                                     levels = c("Employed",
+                                                "Unemployed",
+                                                "Out of labour force"))
+
+###### Follow up questions ######
+
+# Most important attribute
+data$most_important <- factor(
+  data$FU1,
+  levels = 1:3,
+  labels = c("Information about income inequality",
+             "Information about greenhouse gas emissions",
+             "The same"))
+
+#  labels = c("Income inequality",
+#             "Greenhouse gas emissions",
+#             "The same"))
+
+# Easiest to understand
+data$easiest_to_und <- factor(
+  data$FU3,
+  levels = 1:3,
+  labels = c("Information about income inequality",
+             "Information about greenhouse gas emissions",
+             "The same"))
+
+
+data <- data %>%
+  mutate(
+    future_use_inequality_dummy = ifelse(FU4 %in% c(4, 5), 1,
+                                   ifelse(is.na(FU4), NA, 0)),
+    future_use_emissions_dummy = ifelse(FU5 %in% c(4, 5), 1,
+                                 ifelse(is.na(FU5), NA, 0)),
+    future_use_income_inequ_dummy = ifelse(FU4 %in% c(1, 2), 1,
+                                           ifelse(is.na(FU4), NA, 0)),
+    future_use_carbon_footprint_dummy = ifelse(FU5 %in% c(1, 2), 1,
+                                               ifelse(is.na(FU5), NA, 0)))
+
+# Greenhouse gas emission: Potential use when shopping
+data$future_use_inequality <- factor(
+  data$FU4,
+  levels = 1:5,
+  labels = c(
+    "Definitely yes",
+    "Probably yes",
+    "Might or might not",
+    "Probably not",
+    "Definitely not"))
+
+# Greenhouse gas emission: Potential use when shopping
+data$future_use_emissions <- factor(
+  data$FU5,
+  levels = 1:5,
+  labels = c(
+    "Definitely yes",
+    "Probably yes",
+    "Might or might not",
+    "Probably not",
+    "Definitely not"))
+
+# Prefer to use 
+data$preferred_format <- factor(
+  data$FU6,
+  levels = 1:3,
+  labels = c("Information about income inequality",
+             "Information about greenhouse gas emissions",
+             "The same"))
+
+###### Attitudes toward inequality/Environment ######
+
+likert_labels <- c("Strongly agree",
+                   "Somewhat agree",
+                   "Neither agree nor disagree",
+                   "Somewhat disagree",
+                   "Strongly disagree")
+
+
+# Inequality
+names(data)[names(data) == "ATI2"] <- "ati_differences"
+names(data)[names(data) == "ATI3"] <- "ati_responsibility"
+names(data)[names(data) == "ATI4"] <- "ati_deserve"
+
+# Environnement
+names(data)[names(data) == "ATE2"] <- "ate_problem"
+names(data)[names(data) == "ATE3"] <- "ate_fight"
+names(data)[names(data) == "ATE4"] <- "ate_lifestyle"
+names(data)[names(data) == "ATE5_1"] <- "ate_resp_us"
+names(data)[names(data) == "ATE5_2"] <- "ate_resp_high"
+names(data)[names(data) == "ATE5_3"] <- "ate_resp_UKgov"
+names(data)[names(data) == "ATE5_4"] <- "ate_resp_companies"
+
+data <- data %>%
+  mutate(
+    ati_differences_dummy = ifelse(ati_differences %in% c(1, 2), 1,
+                                   ifelse(is.na(ati_differences), NA, 0)),
+    ati_responsibility_dummy = ifelse(ati_responsibility %in% c(1, 2), 1,
+                                      ifelse(is.na(ati_responsibility), NA, 0)),
+    ati_deserve_dummy = ifelse(ati_deserve %in% c(1, 2), 1,
+                               ifelse(is.na(ati_deserve), NA, 0)),
+    ate_fight_dummy = ifelse(ate_fight %in% c(1, 2), 1,
+                             ifelse(is.na(ate_fight), NA, 0)),
+    ate_problem_dummy = ifelse(ate_problem %in% c(1, 2), 1,
+                               ifelse(is.na(ate_problem), NA, 0)),
+
+    ate_lifestyle_dummy = ifelse(ate_lifestyle %in% c(1, 2), 1,
+                                 ifelse(is.na(ate_lifestyle), NA, 0)),
+    
+    ate_resp_us_dummy = ifelse(ate_resp_us %in% c(4, 5), 1,
+                               ifelse(is.na(ate_resp_us), NA, 0)),
+    ate_resp_high_dummy = ifelse(ate_resp_high %in%c(4, 5), 1,
+                                 ifelse(is.na(ate_resp_high), NA, 0)),
+    ate_resp_UKgov_dummy = ifelse(ate_resp_UKgov %in% c(4, 5), 1,
+                                  ifelse(is.na(ate_resp_UKgov), NA, 0)),
+    ate_resp_companies_dummy = ifelse(ate_resp_companies %in% c(4, 5), 1,
+                                      ifelse(is.na(ate_resp_companies), NA, 0)))
+
+data$ati_differences <- factor(data$ati_differences, levels = 1:5, labels = likert_labels)
+data$ati_responsibility <- factor(data$ati_responsibility, levels = 1:5, labels = likert_labels)
+data$ati_deserve <- factor(data$ati_deserve, levels = 1:5, labels = likert_labels)
+
+
+data$ate_problem <- factor(data$ate_problem, levels = 1:5, labels = likert_labels)
+data$ate_fight <- factor(data$ate_fight, levels = 1:5, labels = likert_labels)
+data$ate_lifestyle <- factor(data$ate_lifestyle, levels = 1:5, labels = likert_labels)
+data$ate_resp_us <- factor(data$ate_resp_us, levels = 1:5, labels = likert_labels)
+data$ate_resp_high <- factor(data$ate_resp_high, levels = 1:5, labels = likert_labels)
+data$ate_resp_UKgov <- factor(data$ate_resp_UKgov, levels = 1:5, labels = likert_labels)
+data$ate_resp_companies <- factor(data$ate_resp_companies, levels = 1:5, labels = likert_labels)
+
+###### Well-being ######
+
+names(data)[names(data) == "Q275"] <- "trust"
+names(data)[names(data) == "Q276_1"] <- "alone_lunch"
+names(data)[names(data) == "Q276_2"] <- "alone_dinner"
+
+data$trust <- as.numeric(as.character(data$trust))
+data$alone_lunch <- as.numeric(as.character(data$alone_lunch))
+data$alone_dinner <- as.numeric(as.character(data$alone_dinner))
+
+data <- data %>%
+  mutate(
+    trust_dummy = ifelse(trust >= 7, 1, ifelse(is.na(trust), NA, 0)),
+    alone_lunch_dummy = ifelse(alone_lunch >= 6, 1, ifelse(is.na(alone_lunch), NA, 0)),
+    alone_dinner_dummy = ifelse(alone_dinner >= 6, 1, ifelse(is.na(alone_dinner), NA, 0)))
+```
+
+
+```{r}
+## Keeping variables of interest for the main analysis only
+
+dataset <- data %>%
+  select(
+    
+    # design
+    id, order_B3, order_B2, Treatment, Condition, starts_with("inconsistent"),
+    
+    # check
+    attemptAtnn2, attemptAtnn1, attemptICQ, attemptIEQ, starts_with("Duration"),
+
+    # socio-demographiques
+    Left, Centre, Right, political_spectrum, political_party, female, region, age, age_alt,
+    income_alt, educ, university, employ_status, employ_status_3cat,
+
+    # follow-up / perceptions
+    most_important, easiest_to_und, preferred_format, future_use_inequality,  future_use_inequality_dummy,
+    future_use_emissions, future_use_emissions_dummy, future_use_income_inequ_dummy,
+    future_use_carbon_footprint_dummy,
+
+    # attitudes
+    starts_with("ati_"), starts_with("ate_"),
+
+    # wellbeing
+    trust, alone_lunch, alone_dinner, trust_dummy, alone_lunch_dummy, alone_dinner_dummy,
+
+    # WTP blocks (toutes les variables propres)
+    starts_with("price_"), starts_with("p_min_"), starts_with("p_max_"), starts_with("wtp_"),
+
+    # Perception elicitation blocks
+    starts_with("a_B2"), starts_with("a_min_"), starts_with("a_max_"))
+```
+
+
+```{r}
+# Save the analysis dataset used by Info-Gap-Effect.Rmd.
+dataset_ENG <- dataset
+saveRDS(dataset_ENG, "dataset_ENG.rds")
+```

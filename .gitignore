@@ -1,0 +1,14 @@
+.DS_Store
+.Rhistory
+.Rproj.user/
+*.html
+*.log
+*.aux
+*.out
+*.synctex.gz
+*_cache/
+*_files/
+overleaf/halo_attitudes/figures/*
+overleaf/halo_attitudes/tables/*
+!overleaf/halo_attitudes/figures/.gitkeep
+!overleaf/halo_attitudes/tables/.gitkeep
